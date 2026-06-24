@@ -350,6 +350,7 @@ PersonalAgent 默认配好事件订阅 + bot 能力，正常情况下不用动�
 - `env` 只接受合法环境变量名，值支持字符串、数字、布尔值；`BOTMUX_` / `LARK_APP_` 等 botmux 保留键会被忽略（防止串改会话路由/凭证）。
 - 按**会话**注入到 CLI 进程（下个新会话起效）。tmux/zellij 后端经每个 pane 的 `/usr/bin/env` 注入，**不写入共享 server 全局 env**，所以一个 bot 的服务商配置不会串到别的 bot。
 - 也可在 dashboard 的「机器人默认设置 → 环境变量」里填写（owner 鉴权），或用 `/config set env '{...}'`。
+- Mira App 可用 `MIRA_COOKIE_HEADER` / `MIRA_MODEL` / `MIRA_MODE` 配置登录态、模型和推理模式；`MIRA_MODE` 接受 API 值 `quick` / `deep` / `pro`，也兼容用户侧名称 `fast` / `max`。
 - 不要把它当成安全密钥库：值以明文存在 `bots.json` 与进程环境中，可能被本机诊断工具看到。
 
 ---

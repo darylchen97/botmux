@@ -353,6 +353,7 @@ Notes:
 - `env` accepts valid env-var names with string/number/boolean values; botmux-reserved keys (`BOTMUX_`, `LARK_APP_`, …) are ignored, so config can't hijack session routing or creds.
 - Injected **per session** into the CLI process (effective from the next session). On the tmux/zellij backends it goes in via each pane's `/usr/bin/env` prefix, **never the shared server env**, so one bot's provider config can't leak into another's.
 - Also editable in the dashboard ("Bot defaults → Environment variables", owner-authenticated) or via `/config set env '{...}'`.
+- Mira App accepts `MIRA_COOKIE_HEADER` / `MIRA_MODEL` / `MIRA_MODE` for login state, model, and reasoning mode; `MIRA_MODE` supports API values `quick` / `deep` / `pro` and user-facing aliases `fast` / `max`.
 - Not a secret vault: values live in `bots.json` and the process environment in plaintext, visible to local diagnostic tools.
 
 ---

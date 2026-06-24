@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Buffer } from 'node:buffer';
 import { extractMiraHistoryFinalText, sanitizeMiraFinalText } from './mira-output.js';
+import { normalizeMiraMode } from './mira-mode.js';
 
 type JsonObject = Record<string, any>;
 
@@ -255,7 +256,7 @@ class MiraClient {
       comprehensive: 1,
       config: {
         online,
-        mode: process.env.MIRA_MODE || 'quick',
+        mode: normalizeMiraMode(process.env.MIRA_MODE),
         tool_list: online
           ? [
             { name: 'Web', id: 'Web', scope: 'GLOBAL' },
