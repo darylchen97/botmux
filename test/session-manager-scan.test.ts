@@ -26,7 +26,7 @@ vi.mock('../src/config.js', () => ({
   },
 }));
 
-import { getProjectScanDir, getProjectScanDirs } from '../src/core/session-manager.js';
+import { getProjectScanDir, getProjectScanDirs, getSessionWorkingDir } from '../src/core/session-manager.js';
 
 const HOME = process.env.HOME ?? '/root';
 
@@ -47,6 +47,19 @@ describe('getProjectScanDir (single)', () => {
 });
 
 describe('getProjectScanDirs (multi)', () => {
+  it('keeps the direct-start cwd separate from explicit scan roots', () => {
+    mockGetBot.mockReturnValue({
+      config: {
+        workingDir: '~',
+        workingDirs: ['/repos/one', '/repos/two'],
+      },
+    });
+    const session = { larkAppId: 'a1' } as any;
+
+    expect(getSessionWorkingDir(session)).toBe(HOME);
+    expect(getProjectScanDirs(session)).toEqual(['/repos/one', '/repos/two']);
+  });
+
   it('uses defaultWorkingDir instead of implicitly scanning HOME', () => {
     mockGetBot.mockReturnValue({ config: { defaultWorkingDir: '~/Code' } });
     expect(getProjectScanDirs({ larkAppId: 'a1' } as any)).toEqual([`${HOME}/Code`]);

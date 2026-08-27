@@ -1684,7 +1684,7 @@ describe('loadBotConfigs', () => {
     expect(c.workingDir).toBe('/proj/a'); // first element
   });
 
-  it('should preserve explicit workingDirs over workingDir splitting', () => {
+  it('should keep an explicit workingDir separate from workingDirs scan roots', () => {
     process.env.BOTS_CONFIG = '/tmp/explicit.json';
     fsMock.existsSync.mockReturnValue(true);
     fsMock.readFileSync.mockReturnValue(JSON.stringify([{
@@ -1697,7 +1697,22 @@ describe('loadBotConfigs', () => {
     const configs = mod.loadBotConfigs();
     const c = configs[0];
     expect(c.workingDirs).toEqual(['/new/a', '/new/b']);
-    expect(c.workingDir).toBe('/new/a'); // first from workingDirs
+    expect(c.workingDir).toBe('/old/single');
+  });
+
+  it('should use the first workingDirs scan root when workingDir is omitted', () => {
+    process.env.BOTS_CONFIG = '/tmp/explicit-dirs-only.json';
+    fsMock.existsSync.mockReturnValue(true);
+    fsMock.readFileSync.mockReturnValue(JSON.stringify([{
+      larkAppId: 'app_explicit_dirs_only',
+      larkAppSecret: 'secret_explicit_dirs_only',
+      workingDirs: ['/new/a', '/new/b'],
+    }]));
+
+    const configs = mod.loadBotConfigs();
+    const c = configs[0];
+    expect(c.workingDirs).toEqual(['/new/a', '/new/b']);
+    expect(c.workingDir).toBe('/new/a');
   });
 
   it('should handle multiple bot entries', () => {

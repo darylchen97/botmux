@@ -1508,7 +1508,11 @@ export interface BotConfig {
   overloadAlert?: boolean;
   /** Native Lark VC bot meeting copilot bridge. Push is primary; polling remains gate/backfill. */
   vcMeetingAgent?: VcMeetingAgentConfig;
+  /** Fallback cwd for starting directly from the repo picker. When omitted,
+   * the first configured `workingDirs` entry remains the compatibility fallback. */
   workingDir?: string;
+  /** Git repository scan roots shown by the repo picker. When both fields are
+   * configured, these roots no longer replace the explicit `workingDir`. */
   workingDirs?: string[];
   allowedUsers?: string[];
   /**
@@ -2821,10 +2825,17 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       }
     }
 
-    // Parse workingDirs from comma-separated workingDir if workingDirs not explicitly set
+    // Parse workingDirs from comma-separated workingDir if workingDirs is not
+    // explicitly set. When both fields are present they have separate jobs:
+    // workingDir is the repo picker's direct-start cwd; workingDirs are scan
+    // roots. Configs that only set workingDirs keep the historical first-root
+    // fallback for direct start.
     let workingDirs = entry.workingDirs;
-    if (!workingDirs && entry.workingDir) {
-      workingDirs = String(entry.workingDir).split(',').map((s: string) => s.trim()).filter(Boolean);
+    const legacyWorkingDirs = entry.workingDir
+      ? String(entry.workingDir).split(',').map((s: string) => s.trim()).filter(Boolean)
+      : [];
+    if (!workingDirs && legacyWorkingDirs.length > 0) {
+      workingDirs = legacyWorkingDirs;
     }
 
     let oncallChats: OncallChat[] | undefined;
@@ -3118,7 +3129,7 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       // Only explicit true persisted (undefined = off), same as restrictGrantCommands.
       overloadAlert: entry.overloadAlert === true || undefined,
       vcMeetingAgent,
-      workingDir: workingDirs?.[0] ?? entry.workingDir,
+      workingDir: legacyWorkingDirs[0] ?? workingDirs?.[0] ?? entry.workingDir,
       workingDirs,
       allowedUsers: entry.allowedUsers,
       // Only a well-formed native open_id is trusted; anything else (stray on_/
