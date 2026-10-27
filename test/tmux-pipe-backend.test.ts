@@ -1889,6 +1889,130 @@ describe('TmuxPipeBackend fifo fd ownership', () => {
   });
 });
 
+describe('TmuxPipeBackend legacy child reaper on reattach', () => {
+  const socketName = 'legacy-reaper-test';
+  const target = 'bmx-legacy-reaper';
+  const jobCalls = () => mockedExecFileSync.mock.calls.filter(([, args]) => (
+    Array.isArray(args) && args.includes('run-shell')
+  ));
+
+  function emulateDeath(opts: {
+    version: string;
+    line?: string;
+    firstUnreadable?: boolean;
+    publishAfterJob?: boolean;
+    jobFails?: boolean;
+    publishAfterReads?: number;
+    versionAfterOptions?: string;
+  }) {
+    let reads = 0;
+    let jobRan = false;
+    let version = opts.version;
+    mockedExecFileSync.mockImplementation(((_bin: unknown, args: string[]) => {
+      if (args[0] === '-V') return version;
+      if (args.includes('#{session_attached}') && opts.versionAfterOptions) {
+        // applySessionOptions already installed legacy `on`. A version-cache
+        // refresh before the corpse probe must not change that applied mode.
+        version = opts.versionAfterOptions;
+        resetTmuxVersionCacheForTests();
+        getTmuxVersionCached();
+        return '1';
+      }
+      if (args.includes('run-shell')) {
+        jobRan = true;
+        if (opts.jobFails) throw Object.assign(new Error('job deadline'), { code: 'ETIMEDOUT' });
+        return '';
+      }
+      if (args.includes('#{pane_dead}:#{pane_dead_status}')) {
+        reads += 1;
+        if (opts.firstUnreadable && reads === 1) throw Object.assign(new Error('probe deadline'), { code: 'ETIMEDOUT' });
+        if (opts.publishAfterJob && jobRan) return '1:0';
+        if (opts.publishAfterReads && reads >= opts.publishAfterReads) return '1:77';
+        return opts.line ?? '1:';
+      }
+      return '';
+    }) as typeof execFileSync);
+  }
+
+  function reattach() {
+    const backend = new TmuxPipeBackend(target, { ownsSession: true, isReattach: true, socketName });
+    backend.spawn('', [], {
+      ...spawnOpts(), env: { ...process.env, BOTMUX_CODEX_INSTANCE_BINDING: '' } as Record<string, string>,
+    });
+    // Match the worker: subscribe only after spawn() returns, including its
+    // synchronous corpse-refusal path. The resulting exit must be sticky.
+    const exits: Array<number | null> = [];
+    backend.onExit(code => exits.push(code));
+    return { backend, exits };
+  }
+
+  it.each([
+    { label: 'old version', version: 'tmux 2.8', firstUnreadable: false },
+    { label: 'unknown version after an unreadable first probe', version: 'tmux unknown', firstUnreadable: true },
+    { label: 'unknown version refreshed to modern', version: 'tmux unknown', firstUnreadable: true, versionAfterOptions: 'tmux 3.4' },
+  ])('recovers exit 0 from a lost SIGCHLD ($label)', opts => {
+    emulateDeath({ ...opts, publishAfterJob: true });
+    const { backend, exits } = reattach();
+    try {
+      expect(exits).toEqual([0]);
+      expect(jobCalls()).toHaveLength(1);
+      expect(jobCalls()[0]).toEqual([
+        'tmux', ['-L', socketName, 'run-shell', '-b', 'true'], expect.objectContaining({ timeout: expect.any(Number) }),
+      ]);
+      expect(mockedExecFileSync).toHaveBeenCalledWith(
+        'tmux', ['-L', socketName, 'kill-session', '-t', target], expect.any(Object),
+      );
+    } finally { backend.kill(); }
+  });
+
+  it('nudges once for a signal death and keeps the status-less exit fallback', () => {
+    emulateDeath({ version: 'tmux 2.8' });
+    const { backend, exits } = reattach();
+    try {
+      expect(exits).toEqual([1]);
+      expect(jobCalls()).toHaveLength(1);
+    } finally { backend.kill(); }
+  });
+
+  it('recovers the status when applying on loses its client reply', () => {
+    emulateDeath({ version: 'tmux 2.8', publishAfterJob: true });
+    mockedExecSync.mockImplementation(((cmd: string) => {
+      if (cmd.includes('remain-on-exit on')) {
+        throw Object.assign(new Error('option reply deadline'), { code: 'ETIMEDOUT' });
+      }
+      return Buffer.from('');
+    }) as typeof execSync);
+    const { backend, exits } = reattach();
+    try {
+      expect(exits).toEqual([0]);
+      expect(jobCalls()).toHaveLength(1);
+    } finally { backend.kill(); }
+  });
+
+  it('still reads the real status when the nudge itself fails', () => {
+    emulateDeath({ version: 'tmux 2.8', jobFails: true, publishAfterReads: 2 });
+    const { backend, exits } = reattach();
+    try {
+      expect(exits).toEqual([77]);
+      expect(jobCalls()).toHaveLength(1);
+    } finally { backend.kill(); }
+  });
+
+  it.each([
+    { version: 'tmux 3.2', line: '1:', exits: [1] },
+    { version: 'tmux 2.8', line: '0:', exits: [] },
+    { version: 'tmux 2.8', line: '1:77', exits: [77] },
+    { version: 'tmux 2.8', line: '', exits: [] },
+  ])('does not nudge $version when the death probe returns "$line"', opts => {
+    emulateDeath(opts);
+    const { backend, exits } = reattach();
+    try {
+      expect(exits).toEqual(opts.exits);
+      expect(jobCalls()).toHaveLength(0);
+    } finally { backend.kill(); }
+  });
+});
+
 describe('TmuxPipeBackend pipe-pane death evidence', () => {
   const isDeadProbe = (args: any) =>
     Array.isArray(args) && args.includes('display-message')

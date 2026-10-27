@@ -232,12 +232,19 @@ describe.skipIf(!realTmux)('tmux liveness probes treat a kept corpse as missing'
    */
   const waitForDeadPane = async (name: string): Promise<{ dead: boolean; status: string }> => {
     const deadline = Date.now() + 10_000;
+    let reaperNudged = false;
     for (;;) {
       const out = tmux('display-message', '-p', '-t', name, '#{pane_dead}:#{pane_dead_status}');
       const text = String(out.stdout ?? '').trim();
       const [dead, status] = text.split(':');
       const value = status ?? '';
       if (dead === '1' && value !== '') return { dead: true, status: value };
+      if (dead === '1' && !reaperNudged) {
+        // This bare fixture has no backend yet to wake a lost libutempter
+        // SIGCHLD (tmux #4559). Keep the real exit-code assertion below.
+        reaperNudged = true;
+        tmux('run-shell', '-b', 'true');
+      }
       if (Date.now() > deadline) return { dead: dead === '1', status: value };
       await new Promise(r => setTimeout(r, 25));
     }

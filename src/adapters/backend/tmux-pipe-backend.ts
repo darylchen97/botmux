@@ -514,6 +514,8 @@ export class TmuxPipeBackend implements SessionBackend {
   private cols = 200;
   private rows = 50;
   private exited = false;
+  /** Track the selected option, even if its reply is lost or the version refreshes. */
+  private legacyRetention = false;
   /** Set after pipe-pane subscription is active so kill() knows to cancel it. */
   private pipeAttached = false;
   /** Identity of the session THIS spawn() created (`<server pid> <session id>
@@ -1429,16 +1431,30 @@ export class TmuxPipeBackend implements SessionBackend {
    * liveness probe report `exists` forever (see probePaneAddressability).
    */
   private readPaneDeath(): PaneDeathResolution {
+    let reaperNudged = false;
     // One display-message round; an error is an unreadable (empty) line.
     const readLine = (): string => {
       try {
-        return String(
+        const line = String(
           execFileSync(
             'tmux',
             [...this.tmuxArgs, 'display-message', '-p', '-t', this.paneTarget, '#{pane_dead}:#{pane_dead_status}'],
             { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PANE_DEATH_PROBE_TIMEOUT_MS, env: tmuxEnv() },
           ) ?? '',
         ).trim();
+        if (this.legacyRetention && line === '1:' && !reaperNudged) {
+          reaperNudged = true;
+          // Old libutempter builds can lose SIGCHLD while closing the pane,
+          // leaving a zombie and an indefinitely empty status (tmux #4559).
+          // One short job on THIS server wakes its child reaper; the existing
+          // bounded reads below still decide the real status or signal fallback.
+          try {
+            execFileSync('tmux', [...this.tmuxArgs, 'run-shell', '-b', 'true'], {
+              stdio: 'ignore', timeout: PANE_DEATH_PROBE_TIMEOUT_MS, env: tmuxEnv(),
+            });
+          } catch { /* best effort: keep the confirmed death and bounded retry */ }
+        }
+        return line;
       } catch {
         return '';
       }
@@ -1475,6 +1491,8 @@ export class TmuxPipeBackend implements SessionBackend {
     let tmuxVersion = getTmuxVersionCached();
     if (tmuxVersion === null) tmuxVersion = refreshTmuxVersion();
     const newSessionAcceptsE = tmuxVersionAtLeast(tmuxVersion, 3, 2);
+    const remainOnExit = remainOnExitMode(tmuxVersion);
+    this.legacyRetention = remainOnExit === 'on';
     // The launch itself goes through a private file (pane-launch.ts): the
     // shell, wrapper and argv are exactly what used to follow `--` inline.
     // Strict panes keep their direct `env -i` exec; /bin/sh -c reads no
@@ -1521,7 +1539,7 @@ export class TmuxPipeBackend implements SessionBackend {
       // in order) makes it atomic with creation. `failed` keeps a pane only for
       // a NON-zero exit. Before 3.2, `on` also retains clean exits until the
       // lifecycle watcher reads their status and removes the dead pane.
-      ';', 'set-option', '-t', this.paneTarget, 'remain-on-exit', remainOnExitMode(tmuxVersion),
+      ';', 'set-option', '-t', this.paneTarget, 'remain-on-exit', remainOnExit,
     ];
     const commandBytes = tmuxCommandBytes(argv);
     // Every failure below ends here. The chat only ever sees `error` (tmux's
@@ -1655,7 +1673,10 @@ export class TmuxPipeBackend implements SessionBackend {
     try {
       // Fresh sessions set this atomically with new-session. Reattached
       // sessions need it too, before any best-effort cosmetic option can fail.
-      execSync(`${this.tmuxCmd} set-option -t ${t} remain-on-exit ${remainOnExitMode()}`, { stdio: 'ignore', env, timeout: 5000 });
+      const remainOnExit = remainOnExitMode();
+      // A timed-out client may already have applied the option server-side.
+      this.legacyRetention = remainOnExit === 'on';
+      execSync(`${this.tmuxCmd} set-option -t ${t} remain-on-exit ${remainOnExit}`, { stdio: 'ignore', env, timeout: 5000 });
       // status bar ON: shows tmux's window list so a user who manually
       // `tmux attach -t <session>`es can navigate windows. Zero effect on the
       // Lark card / web terminal — both read PANE bytes (capture-pane /
