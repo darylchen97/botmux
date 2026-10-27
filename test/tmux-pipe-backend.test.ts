@@ -67,6 +67,7 @@ import {
   tmuxLifecycleInitialDelayMs,
   setStartupTmuxRetrySleepForTests,
   buildPipePaneStartupError,
+  __testOnly_liveFifoReaderCount,
 } from '../src/adapters/backend/tmux-pipe-backend.js';
 import { resetTmuxVersionCacheForTests, getTmuxVersionCached } from '../src/setup/ensure-tmux.js';
 import { bufferSpawnResult } from './helpers/spawn-result.js';
@@ -2256,5 +2257,130 @@ describe('TmuxPipeBackend tmux version gating', () => {
       Array.isArray(args) && (args[0] === 'resize-window' || args[0] === 'resize-pane')
     ));
     expect(resizeCalls).toEqual([]);
+  });
+});
+
+// tmux 2.8 dereferences a dead retained pane's released event when pipe-pane
+// subscribes to it and crashes the WHOLE server (independently reproduced on a
+// real 2.8: direct pipe-pane -> "lost server", every neighbour session dies).
+// On old/unknown tmux the subscription is therefore funnelled through an
+// `if-shell -F '#{pane_dead}'` decision queued atomically with the subscription
+// in ONE server command; a marker reply means the pane was already dead.
+// The real-2.8 crash regression lives in tmux-legacy-pipe-guard.test.ts (CI has
+// no 2.8 binary), so THIS mock suite is the CI-runnable pin for the guard.
+describe('TmuxPipeBackend dead-pane guard before pipe-pane (#2419)', () => {
+  const target = 'bmx-dead-guard';
+  const MARKER = 'botmux-pane-dead-before-pipe';
+
+  // Old/unknown version, and a reattach corpse probe that answers "alive" so
+  // spawn() proceeds to the fifo + attach steps without bounded re-reads.
+  function emulateOldTmux(versionString: string, opts: { attachReply?: string; attachThrows?: boolean } = {}) {
+    mockedExecFileSync.mockImplementation(((_bin: unknown, args: string[]) => {
+      if (Array.isArray(args) && args[0] === '-V') return versionString;
+      if (Array.isArray(args) && args.includes('#{pane_dead}:#{pane_dead_status}')) return '0:0';
+      return Buffer.from('') as any;
+    }) as typeof execFileSync);
+    mockedExecSync.mockImplementation(((cmd: unknown) => {
+      const text = String(cmd);
+      if (text.includes('if-shell') && text.includes(target)) {
+        if (opts.attachThrows) throw new Error('should not happen');
+        return Buffer.from(opts.attachReply ?? '') as any;
+      }
+      return Buffer.from('') as any;
+    }) as typeof execSync);
+  }
+
+  function attachCommands(): string[] {
+    return mockedExecSync.mock.calls
+      .map(c => String(c[0]))
+      .filter(c => c.includes('pipe-pane') || c.includes('if-shell'));
+  }
+
+  // The wrapped command is itself a single-quoted argument of if-shell, so its
+  // inner quotes reach us shell-escaped (`'\''`); unescape to read its shape.
+  function unescapeQuotes(s: string): string {
+    return s.replace(/'\\''/g, "'");
+  }
+
+  it.each(['tmux 2.8', 'tmux 3.1c', 'tmux not-a-version'])(
+    '%s: subscribes through the atomic if-shell -F pane_dead guard, not a bare pipe-pane', (versionString) => {
+      emulateOldTmux(versionString);
+      const be = new TmuxPipeBackend(target, { createSession: true, ownsSession: true });
+      try {
+        const readersBefore = __testOnly_liveFifoReaderCount();
+        expect(() => be.spawn('', [], spawnOpts())).not.toThrow();
+        expect(__testOnly_liveFifoReaderCount()).toBe(readersBefore + 1);
+        const cmds = attachCommands();
+        expect(cmds).toHaveLength(1);
+        // The death verdict and the subscription are arguments of ONE tmux
+        // invocation: a client-side probe could race the CLI exit.
+        expect(cmds[0]).toMatch(new RegExp(`if-shell -F -t '${target}' '#\\{pane_dead\\}'`));
+        expect(cmds[0]).toContain(`display-message -p ${MARKER}`);
+        expect(unescapeQuotes(cmds[0])).toContain(`pipe-pane -O -t '${target}'`);
+      } finally {
+        be.kill();
+      }
+    });
+
+  it('a marker reply on a fresh create is a deterministic one-shot startup failure: no retry, no exit, reader recycled', () => {
+    emulateOldTmux('tmux 2.8', { attachReply: MARKER });
+    const be = new TmuxPipeBackend(target, { createSession: true, ownsSession: true });
+    const exits: Array<[number | null, NodeJS.Signals | null]> = [];
+    be.onExit((code, signal) => exits.push([code, signal]));
+    const readersBefore = __testOnly_liveFifoReaderCount();
+    expect(() => be.spawn('', [], spawnOpts())).toThrow(/pane is dead/);
+    // An onExit wired only afterwards (worker ordering) must stay empty too:
+    // a retained dead pane is a startup failure, not a sticky phantom crash.
+    be.onExit((code, signal) => exits.push([code, signal]));
+    expect(attachCommands()).toHaveLength(1); // rejected deterministically: never retried
+    expect(exits).toEqual([]);
+    expect(__testOnly_liveFifoReaderCount()).toBe(readersBefore);
+  });
+
+  it('a marker reply on a biased reattach reports exit 1 once and recycles the reader', () => {
+    emulateOldTmux('tmux 2.8', { attachReply: MARKER });
+    const be = new TmuxPipeBackend(target, { ownsSession: true, isReattach: true });
+    const exits: number[] = [];
+    be.onExit(code => exits.push(code));
+    const readersBefore = __testOnly_liveFifoReaderCount();
+    expect(() => be.spawn('', [], spawnOpts())).toThrow(/pane is dead/);
+    expect(attachCommands()).toHaveLength(1);
+    expect(exits).toEqual([1]); // a pane already gone at attach is a real session loss
+    // A real session-loss exit is sticky: a listener wired after spawn (the
+    // worker's ordering) still receives it — unlike a fresh-create failure.
+    const lateExits: number[] = [];
+    be.onExit(code => lateExits.push(code));
+    expect(lateExits).toEqual([1]);
+    expect(__testOnly_liveFifoReaderCount()).toBe(readersBefore);
+  });
+
+  it('a non-marker reply means the subscription succeeded (kill then cancels the active pipe-pane)', () => {
+    emulateOldTmux('tmux 2.8', { attachReply: 'unrelated tmux output\n' });
+    const be = new TmuxPipeBackend(target, { createSession: true, ownsSession: true });
+    try {
+      expect(() => be.spawn('', [], spawnOpts())).not.toThrow();
+      expect(attachCommands()).toHaveLength(1);
+      be.kill();
+      // kill() only issues the no-arg pipe-pane cancellation when the guard
+      // reply was accepted as a successful subscription.
+      const cancel = attachCommands().filter(c => !c.includes('if-shell') && !c.includes('-O'));
+      expect(cancel.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      be.kill();
+    }
+  });
+
+  it('tmux >= 3.2 subscribes with a bare pipe-pane and no if-shell guard', () => {
+    // beforeEach default emulation is modern tmux; do not override it.
+    const be = new TmuxPipeBackend(target, { createSession: true, ownsSession: true });
+    try {
+      expect(() => be.spawn('', [], spawnOpts())).not.toThrow();
+      const cmds = attachCommands();
+      expect(cmds).toHaveLength(1);
+      expect(cmds[0]).not.toContain('if-shell');
+      expect(cmds[0]).toMatch(new RegExp(`pipe-pane -O -t '${target}'`));
+    } finally {
+      be.kill();
+    }
   });
 });
