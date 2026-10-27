@@ -2354,6 +2354,56 @@ describe('TmuxPipeBackend dead-pane guard before pipe-pane (#2419)', () => {
     expect(__testOnly_liveFifoReaderCount()).toBe(readersBefore);
   });
 
+  // A vanished SESSION is a different entry point than a retained corpse: on a
+  // real tmux (verified 2.8) `if-shell -F -t <gone> '#{pane_dead}'` evaluates
+  // FALSE and runs the else branch, so the embedded pipe-pane answers
+  // deterministically "can't find pane" — NOT a marker, NOT a server-level
+  // error. It must fail once (never retried) without the create path emitting
+  // a process exit.
+  function emulateVanishedTarget() {
+    mockedExecFileSync.mockImplementation(((_bin: unknown, args: string[]) => {
+      if (Array.isArray(args) && args[0] === '-V') return 'tmux 2.8';
+      if (Array.isArray(args) && args.includes('#{pane_dead}:#{pane_dead_status}')) return '0:0';
+      return Buffer.from('') as any;
+    }) as typeof execFileSync);
+    mockedExecSync.mockImplementation(((cmd: unknown) => {
+      const text = String(cmd);
+      if (text.includes('if-shell') && text.includes(target)) {
+        // Node's ExecSyncError message names the command; the reason rides in
+        // stderr, which is what the retry classifier reads.
+        throw Object.assign(new Error(`Command failed: ${text}`), {
+          status: 1,
+          signal: null,
+          stderr: Buffer.from(`can't find pane: ${target}`),
+        });
+      }
+      return Buffer.from('') as any;
+    }) as typeof execSync);
+  }
+
+  it('a vanished target (else-branch "can\'t find pane") is a one-shot startup failure with no exit', () => {
+    emulateVanishedTarget();
+    const be = new TmuxPipeBackend(target, { createSession: true, ownsSession: true });
+    const exits: Array<[number | null, NodeJS.Signals | null]> = [];
+    be.onExit((code, signal) => exits.push([code, signal]));
+    const readersBefore = __testOnly_liveFifoReaderCount();
+    expect(() => be.spawn('', [], spawnOpts())).toThrow(/Command failed/);
+    be.onExit((code, signal) => exits.push([code, signal]));
+    expect(attachCommands()).toHaveLength(1); // deterministic: no retries
+    expect(exits).toEqual([]);
+    expect(__testOnly_liveFifoReaderCount()).toBe(readersBefore);
+  });
+
+  it('a vanished target on biased reattach reports exit 1 once', () => {
+    emulateVanishedTarget();
+    const be = new TmuxPipeBackend(target, { ownsSession: true, isReattach: true });
+    const exits: number[] = [];
+    be.onExit(code => exits.push(code));
+    expect(() => be.spawn('', [], spawnOpts())).toThrow(/Command failed/);
+    expect(attachCommands()).toHaveLength(1);
+    expect(exits).toEqual([1]);
+  });
+
   it('a non-marker reply means the subscription succeeded (kill then cancels the active pipe-pane)', () => {
     emulateOldTmux('tmux 2.8', { attachReply: 'unrelated tmux output\n' });
     const be = new TmuxPipeBackend(target, { createSession: true, ownsSession: true });
