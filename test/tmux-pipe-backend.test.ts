@@ -2274,7 +2274,7 @@ describe('TmuxPipeBackend dead-pane guard before pipe-pane (#2419)', () => {
 
   // Old/unknown version, and a reattach corpse probe that answers "alive" so
   // spawn() proceeds to the fifo + attach steps without bounded re-reads.
-  function emulateOldTmux(versionString: string, opts: { attachReply?: string; attachThrows?: boolean } = {}) {
+  function emulateOldTmux(versionString: string, opts: { attachReply?: string } = {}) {
     mockedExecFileSync.mockImplementation(((_bin: unknown, args: string[]) => {
       if (Array.isArray(args) && args[0] === '-V') return versionString;
       if (Array.isArray(args) && args.includes('#{pane_dead}:#{pane_dead_status}')) return '0:0';
@@ -2283,11 +2283,23 @@ describe('TmuxPipeBackend dead-pane guard before pipe-pane (#2419)', () => {
     mockedExecSync.mockImplementation(((cmd: unknown) => {
       const text = String(cmd);
       if (text.includes('if-shell') && text.includes(target)) {
-        if (opts.attachThrows) throw new Error('should not happen');
         return Buffer.from(opts.attachReply ?? '') as any;
       }
       return Buffer.from('') as any;
     }) as typeof execSync);
+  }
+
+  // Shape assertions that discriminate beyond a contains() on the unwrapped
+  // command: (1) the marker display MUST be the then-branch (death verdict),
+  // i.e. appear before the subscription in argv; (2) the subscription MUST
+  // reach tmux as ONE single-quoted if-shell argument — an unescaped
+  // pipePaneCommand splits into "too many arguments" on both 2.8 and 3.3a,
+  // so the guard silently never runs while a weaker contains() still passes.
+  function expectGuardShape(cmd: string) {
+    const unwrapped = unescapeQuotes(cmd);
+    expect(unwrapped).toContain(`pipe-pane -O -t '${target}'`);
+    expect(cmd.indexOf(MARKER)).toBeLessThan(cmd.indexOf('pipe-pane -O'));
+    expect(cmd).toContain("'pipe-pane -O -t");
   }
 
   function attachCommands(): string[] {
@@ -2316,7 +2328,7 @@ describe('TmuxPipeBackend dead-pane guard before pipe-pane (#2419)', () => {
         // invocation: a client-side probe could race the CLI exit.
         expect(cmds[0]).toMatch(new RegExp(`if-shell -F -t '${target}' '#\\{pane_dead\\}'`));
         expect(cmds[0]).toContain(`display-message -p ${MARKER}`);
-        expect(unescapeQuotes(cmds[0])).toContain(`pipe-pane -O -t '${target}'`);
+        expectGuardShape(cmds[0]);
       } finally {
         be.kill();
       }
