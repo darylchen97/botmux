@@ -139,6 +139,7 @@ function scriptIndex(args: readonly string[]): number {
 beforeEach(() => {
   mockedExecSync.mockReset();
   mockedExecFileSync.mockReset();
+  mockedExecFileSync.mockImplementation((_bin, args) => args?.includes('-V') ? 'tmux 3.2' : Buffer.from(''));
   mockedSpawnSync.mockReset();
   mockedUnlinkSync.mockReset();
   mockedOpenSync.mockReset().mockReturnValue(7);

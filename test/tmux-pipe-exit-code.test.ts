@@ -194,6 +194,8 @@ describe.skipIf(!realTmux)('tmux liveness probes treat a kept corpse as missing'
     // timeout even though the option below is set atomically. Exiting at once
     // makes the pane dead essentially at creation; the atomic chain still
     // guarantees remain-on-exit is in effect, so status 77 is recorded.
+    // Use `on` for the fixture so it also works on tmux <3.2; these corpse
+    // probes require a retained failed pane, independent of the option mode.
     // The option MUST be chained ATOMICALLY into new-session (`\; set-option`,
     // one server queue, in order) — the same way createDetachedSession does it.
     // It is per session and must target the corpse itself, not the neighbour
@@ -201,7 +203,7 @@ describe.skipIf(!realTmux)('tmux liveness probes treat a kept corpse as missing'
     tmux('new-session', '-d', '-s', 'bmx-live-one', 'sleep 60');
     tmux(
       'new-session', '-d', '-s', 'bmx-corpse', 'sh -c "exit 77"',
-      ';', 'set-option', '-t', 'bmx-corpse', 'remain-on-exit', 'failed',
+      ';', 'set-option', '-t', 'bmx-corpse', 'remain-on-exit', 'on',
     );
     const deadStatus = await waitForDeadPane('bmx-corpse');
     expect(deadStatus.dead).toBe(true);

@@ -53,6 +53,13 @@ function shellescape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+/** `failed` was added in tmux 3.2. Older/unknown versions retain every exit
+ *  with `on`; handlePaneExit() reads the status and reaps that pane, including
+ *  clean exits, so keeping it does not leak a session. */
+function remainOnExitMode(): 'on' | 'failed' {
+  return tmuxVersionAtLeast(getTmuxVersionCached(), 3, 2) ? 'failed' : 'on';
+}
+
 /** Blocking sleep for the synchronous spawn path (SessionBackend.spawn is sync).
  *  Atomics.wait is allowed on Node's main thread and burns no CPU — spawn only
  *  runs during session startup, so briefly blocking the worker is fine. */
@@ -654,12 +661,30 @@ export class TmuxPipeBackend implements SessionBackend {
     // Retrying is idempotent (-O overwrites any prior subscription); a
     // deterministic server-answered rejection (pane genuinely gone) is
     // re-thrown at once instead of delaying the same failure.
+    const pipePaneCommand = `pipe-pane -O -t ${shellescape(this.paneTarget)} ${shellescape(`cat > ${shellescape(this.fifoPath)}`)}`;
+    const guardDeadPane = !tmuxVersionAtLeast(getTmuxVersionCached(), 3, 2);
+    const deadPaneMarker = 'botmux-pane-dead-before-pipe';
     for (let attempt = 0; ; attempt++) {
       try {
-        execSync(
-          `${this.tmuxCmd} pipe-pane -O -t ${shellescape(this.paneTarget)} 'cat > ${shellescape(this.fifoPath)}'`,
-          { stdio: ['ignore', 'ignore', 'pipe'], timeout: 5000, env: tmuxEnv() },
-        );
+        if (guardDeadPane) {
+          // tmux 2.8 can crash its server when pipe-pane dereferences an
+          // already-dead pane's released event. Keep this check and subscription
+          // in ONE server queue; a client-side probe would race the CLI exit.
+          const output = execSync(
+            `${this.tmuxCmd} if-shell -F -t ${shellescape(this.paneTarget)} '#{pane_dead}' ${shellescape(`display-message -p ${deadPaneMarker}`)} ${shellescape(pipePaneCommand)}`,
+            { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000, env: tmuxEnv() },
+          );
+          if (String(output).trim() === deadPaneMarker) {
+            // Reuse the deterministic startup-failure teardown and diagnostic
+            // path below. A retained pane is not a successful subscription.
+            throw Object.assign(new Error('pane is dead'), { status: 1, stderr: 'pane is dead' });
+          }
+        } else {
+          execSync(
+            `${this.tmuxCmd} pipe-pane -O -t ${shellescape(this.paneTarget)} 'cat > ${shellescape(this.fifoPath)}'`,
+            { stdio: ['ignore', 'ignore', 'pipe'], timeout: 5000, env: tmuxEnv() },
+          );
+        }
         this.pipeAttached = true;
         this.startLifecycleWatcher();
         break;
@@ -1416,7 +1441,7 @@ export class TmuxPipeBackend implements SessionBackend {
       ...(opts.strictEnv
         ? [shellSpec.shell, '-c', loader, '_', launchFile.path]
         : shellCommandArgv(shellSpec, loader, [launchFile.path])),
-      // `remain-on-exit failed` must be in effect BEFORE the CLI can exit, or a
+      // `remain-on-exit` must be in effect BEFORE the CLI can exit, or a
       // fast death (exit 127 from a missing binary is sub-100ms) takes the
       // whole session with it and the exit status is gone forever. applySession
       // Options() at the end of this method is far too late — measured: a
@@ -1424,8 +1449,9 @@ export class TmuxPipeBackend implements SessionBackend {
       // crash shape this channel exists to report. Chaining it into the SAME
       // tmux invocation (tmux runs `\;`-separated commands in one server queue,
       // in order) makes it atomic with creation. `failed` keeps a pane only for
-      // a NON-zero exit, so a clean exit 0 still removes the session as before.
-      ';', 'set-option', '-t', this.paneTarget, 'remain-on-exit', 'failed',
+      // a NON-zero exit. Before 3.2, `on` also retains clean exits until the
+      // lifecycle watcher reads their status and removes the dead pane.
+      ';', 'set-option', '-t', this.paneTarget, 'remain-on-exit', remainOnExitMode(),
     ];
     const commandBytes = tmuxCommandBytes(argv);
     // Every failure below ends here. The chat only ever sees `error` (tmux's
@@ -1557,6 +1583,9 @@ export class TmuxPipeBackend implements SessionBackend {
     const t = shellescape(this.paneTarget);
     const env = tmuxEnv();
     try {
+      // Fresh sessions set this atomically with new-session. Reattached
+      // sessions need it too, before any best-effort cosmetic option can fail.
+      execSync(`${this.tmuxCmd} set-option -t ${t} remain-on-exit ${remainOnExitMode()}`, { stdio: 'ignore', env, timeout: 5000 });
       // status bar ON: shows tmux's window list so a user who manually
       // `tmux attach -t <session>`es can navigate windows. Zero effect on the
       // Lark card / web terminal — both read PANE bytes (capture-pane /
@@ -1579,12 +1608,6 @@ export class TmuxPipeBackend implements SessionBackend {
       if (version === null || tmuxVersionAtLeast(version, 3, 1)) {
         execSync(`${this.tmuxCmd} set-option -t ${t} window-size largest`, { stdio: 'ignore', env, timeout: 5000 });
       }
-      // `remain-on-exit failed` is set ATOMICALLY with new-session (see the
-      // `\;` chain in createDetachedSession) — a fast death would otherwise
-      // take the status with it. This re-apply is for a REATTACHED session:
-      // one created by an older build has no such option yet, and it must be
-      // in place before the CLI can die. Idempotent.
-      execSync(`${this.tmuxCmd} set-option -t ${t} remain-on-exit failed`, { stdio: 'ignore', env, timeout: 5000 });
     } catch { /* session may not be ready yet — benign */ }
   }
 
