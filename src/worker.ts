@@ -19975,7 +19975,7 @@ function resolveCliExtraArgs(): string[] {
 }
 
 /** One-shot guard for the tmux version / crash-exit-code degradation self-check. */
-let hasWarnedTmuxExitCodeDegradation = false;
+let hasLoggedTmuxVersionSelfCheck = false;
 
 async function spawnCli(
   cfg: Extract<DaemonToWorker, { type: 'init' }>,
@@ -20400,22 +20400,23 @@ async function spawnCli(
       if (existingSessionUnknown) {
         log('tmux has-session probe returned no answer but the binary is on PATH (host load); biasing toward reattach instead of gating');
       }
-      // Startup self-check: report the tmux version ONCE per worker. On a tmux
-      // older than 3.2 (or an unreadable version) `remain-on-exit failed` is
-      // unavailable, so new sessions run with the pre-#2164 default: they
-      // always start, but the crash-restart policy cannot see 77/127 (it
-      // degrades to a generic exit). Warn that the deterministic-failure
-      // circuit breaker is off, without gating anything.
+      // Startup self-check: report the tmux version ONCE per worker.
+      // `remain-on-exit failed` exists only on tmux >= 3.2. Older/unknown
+      // builds use `remain-on-exit on`, which ALSO retains a clean exit: the
+      // lifecycle watcher reads the real pane_dead_status (with a one-shot
+      // reaper nudge when libutempter loses SIGCHLD) and reaps the corpse, so
+      // deterministic crash exit codes (77/127) are reported there as well.
+      // The notice below gates nothing.
       {
         const tmuxVersion = getTmuxVersionCached();
         const vlabel = tmuxVersion ? `${tmuxVersion.major}.${tmuxVersion.minor}` : 'unknown';
-        if (!hasWarnedTmuxExitCodeDegradation) {
+        if (!hasLoggedTmuxVersionSelfCheck) {
           if (tmuxSupportsRemainOnExitFailed(tmuxVersion)) {
             log(`tmux backend: server version ${vlabel} — crash exit-code circuit breaker enabled (remain-on-exit failed supported)`);
           } else {
-            log(`tmux backend: server version ${vlabel} (< 3.2 or unknown) — "remain-on-exit failed" unsupported; new sessions start normally, but deterministic crash exit codes (77/127) are not reported, so the crash-restart circuit breaker is degraded to generic-exit handling`);
+            log(`tmux backend: server version ${vlabel} (< 3.2 or unknown) — "remain-on-exit failed" unsupported; using "remain-on-exit on": sessions start normally and real crash exit codes (77/127) are still read from the retained dead pane (the lifecycle watcher also reaps clean exits); the pipe-pane attach is guarded against the tmux 2.8 dead-pane server crash`);
           }
-          hasWarnedTmuxExitCodeDegradation = true;
+          hasLoggedTmuxVersionSelfCheck = true;
         }
       }
     } else if (effectiveBackend === 'zellij') {
