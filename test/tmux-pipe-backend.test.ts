@@ -2761,6 +2761,77 @@ describe('TmuxPipeBackend dead-pane guard before pipe-pane (#2419)', () => {
       be.kill();
     }
   });
+
+  // ADOPT backends (worker attaching to a CLI it did not launch, keyed by
+  // cliPid) go through NEITHER createDetachedSession() NOR
+  // applySessionOptions(), so legacyRetention must still be resolved at this
+  // boundary — otherwise the guard is silently off and old tmux crashes its
+  // whole server when pipe-pane subscribes to the retained adopted corpse
+  // (real 2.8: 5/5 "lost server", neighbour sessions die with it).
+  describe('adopt path keeps the dead-pane guard on old servers', () => {
+    const adoptTarget = 'bmx-adopt-guard';
+    function adoptAttachCommands(): string[] {
+      return mockedExecSync.mock.calls
+        .map(c => String(c[0]))
+        .filter(c => (c.includes('pipe-pane') || c.includes('if-shell')) && c.includes(adoptTarget));
+    }
+    function adoptEmulateOld(versionString: string, opts: { attachReply?: string } = {}) {
+      mockedExecFileSync.mockImplementation(((_bin: unknown, args: string[]) => {
+        if (Array.isArray(args) && args[0] === '-V') return versionString;
+        if (Array.isArray(args) && args.includes('#{version}')) return versionString.replace('tmux ', '');
+        return Buffer.from('') as any;
+      }) as typeof execFileSync);
+      mockedExecSync.mockImplementation(((cmd: unknown) => {
+        const text = String(cmd);
+        if (text.includes('if-shell') && text.includes(adoptTarget)) {
+          return Buffer.from(opts.attachReply ?? '') as any;
+        }
+        return Buffer.from('') as any;
+      }) as typeof execSync);
+    }
+
+    it.each(['tmux 2.8', 'tmux 3.1c', 'tmux not-a-version'])(
+      '%s: an adopted session subscribes through the if-shell guard', (versionString) => {
+        adoptEmulateOld(versionString);
+        // A live pid: the watcher must not tear anything down during spawn.
+        const be = new TmuxPipeBackend(adoptTarget, { cliPid: process.pid });
+        try {
+          expect(() => be.spawn('', [], spawnOpts())).not.toThrow();
+          const cmds = adoptAttachCommands();
+          expect(cmds).toHaveLength(1);
+          expect(cmds[0]).toMatch(new RegExp(`if-shell -F -t '${adoptTarget}' '#\{pane_dead\}'`));
+          expect(cmds[0]).toContain(`display-message -p ${MARKER}`);
+          expect(cmds[0]).toContain("'pipe-pane -O -t");
+          expect(cmds[0].indexOf(MARKER)).toBeLessThan(cmds[0].indexOf('pipe-pane -O'));
+        } finally {
+          be.kill();
+        }
+      });
+
+    it('a marker on an adopted retained corpse is a deterministic one-shot session loss (exit 1)', () => {
+      adoptEmulateOld('tmux 2.8', { attachReply: MARKER });
+      const be = new TmuxPipeBackend(adoptTarget, { cliPid: process.pid });
+      const exits: Array<number | null> = [];
+      be.onExit(code => exits.push(code));
+      expect(() => be.spawn('', [], spawnOpts())).toThrow(/pane is dead/);
+      expect(adoptAttachCommands()).toHaveLength(1);
+      expect(exits).toEqual([1]);
+      be.kill();
+    });
+
+    it('tmux >= 3.2: an adopted session uses a bare pipe-pane and no guard', () => {
+      const be = new TmuxPipeBackend(adoptTarget, { cliPid: process.pid });
+      try {
+        expect(() => be.spawn('', [], spawnOpts())).not.toThrow();
+        const cmds = adoptAttachCommands();
+        expect(cmds).toHaveLength(1);
+        expect(cmds[0]).not.toContain('if-shell');
+        expect(cmds[0]).toMatch(new RegExp(`pipe-pane -O -t '${adoptTarget}'`));
+      } finally {
+        be.kill();
+      }
+    });
+  });
 });
 
 // The reattach reapply of `remain-on-exit failed` (#2164, backfilled onto

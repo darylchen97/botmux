@@ -658,6 +658,17 @@ export class TmuxPipeBackend implements SessionBackend {
         this.fireExit(corpseDeath.status ?? 1, null);
         return;
       }
+    } else {
+      // ADOPT path (worker attaching to a CLI it did not launch, keyed by its
+      // pid): neither createDetachedSession() nor applySessionOptions() runs
+      // here, so the once-per-session remain-on-exit decision never happens.
+      // Resolve it against the RUNNING server anyway: without it
+      // legacyRetention stays false and the pre-pipe-pane dead-pane guard is
+      // skipped — on old tmux (2.8) subscribing to a retained corpse crashes
+      // the WHOLE server, taking every session on that socket with it.
+      this.legacyRetention = remainOnExitMode(
+        serverTmuxVersion(this.tmuxArgs, resolveTmuxVersionAtSessionBoundary()),
+      ) === 'on';
     }
 
     // Step 1: create the fifo. mkfifo is POSIX; linux/darwin both have it.
