@@ -1,3 +1,5 @@
+import { recordDeploymentContinuation, cancelDeploymentContinuation } from './services/deployment-continuation.js';
+import { deploymentContinuationAuthority } from './core/deployment-continuation-authority.js';
 import { shareVcMeetingSummary } from './services/vc-meeting-summary-share.js';
 import { isCurrentBotInChat, resolveUnionIdFromOpenIdStrict } from './im/lark/client.js';
 import { createBotAdminUnionsPublisher } from './services/bot-admin-unions-store.js';
@@ -127,7 +129,7 @@ import { resolveRegularGroupMode } from './services/chat-reply-mode-store.js';
 import { renameBotOnOpenPlatform, changeBotAvatarOnOpenPlatform, readBotDescriptionsOnOpenPlatform, updateBotDescriptionsOnOpenPlatform } from './services/open-platform-rename.js';
 import { migrateSandboxConfigAtStartup } from './services/sandbox-migration.js';
 import * as sessionStore from './services/session-store.js';
-import { initializeDurableCoordinationRuntime } from './services/durable-coordination-runtime.js';
+import { coordinationModeIsPrimary, initializeDurableCoordinationRuntime } from './services/durable-coordination-runtime.js';
 import { closeLinkRefRuntime, initializeLinkRefRuntime } from './services/link-ref-runtime.js';
 import { startDurableInboxShadowConsumer } from './services/durable-inbox-shadow-consumer.js';
 import {
@@ -194,6 +196,7 @@ import {
 import { migrateOverloadAlertAtStartup } from './services/overload-alert-migration.js';
 import * as messageQueue from './services/message-queue.js';
 import { emitHookEvent, emitHookEventLocal, evaluatePromptGate, HOOK_EVENTS, type HookEvent } from './services/hook-runner.js';
+import { cardClickOperatorIsBotOrApp, createCardClickTurnBinder } from './services/card-click-turn-bind.js';
 import { setSessionLifecycleShutdown } from './services/session-lifecycle-hooks.js';
 import { setTurnResultRuntime } from './core/turn-result-runtime.js';
 
@@ -379,6 +382,14 @@ import {
 } from './core/dispatch-output-sink.js';
 import { runtimeInstallationKey } from './adapters/cli/runtime.js';
 import * as scheduler from './core/scheduler.js';
+import {
+  buildUntilDoneRunPrompt,
+  isAutoCompletedSchedule,
+  isUntilDoneClosed,
+  scheduleNotificationTarget,
+  scheduleNotificationText,
+  UNTIL_DONE_NOTE_MAX_CHARS,
+} from './services/schedule-until-done.js';
 import { scanMultipleProjects } from './services/project-scanner.js';
 import { buildQuotaExhaustedCard, buildRepoSelectCard, buildStreamingCard, getCliDisplayName } from './im/lark/card-builder.js';
 import { codexServiceTierBadge } from './services/codex-service-tier.js';
@@ -460,7 +471,7 @@ import {
   allFinalOutputDeliveryCount,
   snapshotAllFinalOutputDeliveries,
 } from './core/final-output-delivery-drain.js';
-import { AbortDeadlineError, hasExactSafeJsonKeys, ipcRoute, isTrustedHostIpcRequest, JsonBodyTooLargeError, jsonRes, readJsonBody, runWithAbortDeadline, setBotName, setLarkAppId, setDecisionBoardService, startIpcServer, setBotRenamer, setBotAvatarChanger, setBotDescriptionManager, armCoreOnlyReadinessGate, setCoreOnlyReady, setSupervisorShutdownHandler, setCrossPrincipalInterruptionDisableHandler, setDurableSessionLifecycleHandler, setDurableSessionListHandler, setDurableSessionSendHandler, type DurableSessionSendRequest, type DurableSessionSendResult } from './core/dashboard-ipc-server.js';
+import { AbortDeadlineError, hasExactSafeJsonKeys, ipcRoute, isTrustedHostIpcRequest, JsonBodyTooLargeError, jsonRes, readJsonBody, runWithAbortDeadline, setBotName, setLarkAppId, setDecisionBoardService, startIpcServer, setBotRenamer, setBotAvatarChanger, setBotDescriptionManager, armCoreOnlyReadinessGate, setCoreOnlyReady, setSupervisorShutdownHandler, setCrossPrincipalInterruptionDisableHandler, setDurableSessionLifecycleHandler, setDurableSessionListHandler, setDurableSessionSendHandler, setCardClickTurnPoster, type DurableSessionSendRequest, type DurableSessionSendResult } from './core/dashboard-ipc-server.js';
 import { setDeviceIsolationDaemonIdentity } from './core/device-isolation-daemon.js';
 import { currentDeviceIsolationFreezeLease } from './core/device-isolation-activation.js';
 import { reconcileContainmentHandlesOnBoot } from './core/mojo-containment.js';
@@ -509,7 +520,7 @@ import {
 } from './services/group-collaboration-mode-store.js';
 import { loadFrozenCards, saveFrozenCards } from './services/frozen-card-store.js';
 import { resolvePassthroughCommands, resolveAdapterDefaultPassthroughCommands, handleCommand, handleCardCommand, handleCotCommand, handleTermLinkCommand } from './core/command-handler.js';
-import { classifySlash, isCommandDecision, type CascadeItem } from './core/command-router.js';
+import { classifySlash, isCommandDecision, type CascadeItem, type SlashRouteDecision } from './core/command-router.js';
 import { deriveSessionPhase } from './core/session-phase.js';
 import { noteObservedCliVersion } from './core/cli-version-history.js';
 import { cascadeTiming, waitForCliIdle, waitForCommandSettled } from './core/cli-idle-wait.js';
@@ -551,6 +562,7 @@ import { publishTurnCliIdentity, type DelegatedCliIdentity } from './core/turn-c
 import { clearSingleIdentityArtifacts, forgetProvenIdentityContent } from './core/cli-identity.js';
 import type { IdentityStorageModel } from './core/lark-tool-binding.js';
 import { noteInboundSenderUnionId, noteSenderUnionId } from './core/platform-credential-source.js';
+import { validateRoleLibraryPath } from './core/role-library.js';
 import { authorityForDispatch, dispatchCallerFromReply, deliverDispatchWithUser, resolveDispatchUser, scheduleCreateCapabilities, DISPATCH_USER_DELIVERY_ROUTE, DISPATCH_USER_DELIVERY_MAX_BYTES, SCHEDULE_DELEGATED_ADD_ROUTE, SCHEDULE_MANAGED_MUTATE_ROUTE, DISPATCH_USER_MENTION_PREPARE_ROUTE, DISPATCH_USER_MENTION_BIND_ROUTE, registerPendingDispatchUser, readPendingDispatchUser, bindPendingDispatchUser, dropPendingDispatchUser, handoffMessageMatches, readHandoffMessage } from './core/dispatch-user-delegation.js';
 import { resolveUnionIdFromOpenId } from './im/lark/client.js';
 import { ScheduleAuthorityStore } from './services/schedule-authority-store.js';
@@ -672,7 +684,7 @@ import {
   loadSessionOwnerReminderRecords,
   saveSessionOwnerReminderRecords,
 } from './services/session-owner-reminder-store.js';
-import { sendSessionOwnerThreadNotification } from './services/session-owner-notification.js';
+import { buildSessionOwnerMention, sendSessionOwnerThreadNotification } from './services/session-owner-notification.js';
 import {
   getSessionPersistentBackendType,
   isRemoteBackendSession,
@@ -770,6 +782,10 @@ import {
 import type { WorkflowDaemonMutation } from './workflows/v3/daemon-ipc-client.js';
 import type { SavedWorkflowActorContext } from './workflows/v3/library-service.js';
 import { resolveEffectivePluginIds } from './core/plugins/effective.js';
+import { pluginCommandGateway } from './core/plugins/commands/runtime.js';
+import type { PluginCommandTable } from './core/plugins/commands/gateway.js';
+import { runPluginSlashCommand } from './core/plugins/commands/execute.js';
+import { resolvePluginCardPrivileges } from './core/plugins/card-actions/privileges.js';
 import {
   buildCodexCompletionCard,
   buildCodexNotifierResultCard,
@@ -4353,8 +4369,7 @@ async function prepareScheduledTurnCliIdentity(ds: DaemonSession, turnId: string
   // Read the host authority, never the CLI-writable schedules.json projection
   // or the session's last sender. A completed one-shot may still have an
   // admitted turn to restore/continue; manual disables and revocations cannot.
-  const completedOnce = authority.state === 'completed'
-    && task.parsed?.kind === 'once' && task.disabledReason === 'once_completed';
+  const completedOnce = authority.state === 'completed' && isAutoCompletedSchedule(task);
   if (authority.state !== 'active' && !completedOnce) {
     throw new Error(`schedule authority state is ${authority.state}; refusing identity`);
   }
@@ -6404,6 +6419,71 @@ function canTalkForGroupSessions(
     : evaluateTalk(larkAppId, chatId, senderOpenId, botTrustUnionId, memberUnionId, chatType).allowed;
 }
 
+/** Plugin command table for routing. Only `/…` text can route to a plugin, so
+ * ordinary messages skip the registry + bots.json read entirely. */
+function pluginCommandsForRouting(larkAppId: string, text: string): PluginCommandTable | undefined {
+  return text.trim().startsWith('/') ? pluginCommandGateway.table(larkAppId) : undefined;
+}
+
+/** A plugin command whose name the bot also passes through goes to the CLI
+ * (routing order, design §10 decision 2). Say so once at startup. */
+function warnPluginCommandsShadowedByPassthrough(larkAppId: string): void {
+  const passthrough = resolvePassthroughCommands(larkAppId);
+  for (const command of pluginCommandGateway.list(larkAppId)) {
+    if (!passthrough.has(command.name)) continue;
+    logger.warn(`[plugin-command] app=${larkAppId} command=${command.name} plugin=${command.pluginId ?? 'conflict'} shadowed by passthrough; it goes to the CLI`);
+  }
+}
+
+/** Daemon wiring for a `kind: 'plugin'` route; admission order lives in `runPluginSlashCommand`. */
+async function executePluginSlashCommand(input: {
+  ctx: RoutingContext;
+  decision: Extract<SlashRouteDecision, { kind: 'plugin' }>;
+  larkAppId: string;
+  chatId: string;
+  chatType: 'p2p' | 'group' | undefined;
+  anchor: string;
+  messageId: string;
+  senderOpenId: string | undefined;
+  senderUnionId: string | undefined;
+  teamTrustUnionId: string | undefined;
+  botSender: boolean;
+  deps: CommandHandlerDeps;
+}): Promise<void> {
+  if (coordinationModeIsPrimary()) return;
+  const { decision, larkAppId, chatId, anchor, deps } = input;
+  const locale = localeForBot(larkAppId);
+  await runPluginSlashCommand({
+    cmd: decision.cmd,
+    content: decision.content,
+    pluginId: decision.pluginId,
+    larkAppId,
+    chatId,
+    chatType: input.chatType,
+    anchor,
+    messageId: input.messageId,
+    senderOpenId: input.senderOpenId,
+    senderUnionId: input.senderUnionId,
+    locale,
+  }, {
+    restrictedText: () => grantRestrictedSlashCommandText(larkAppId, chatId, input.senderOpenId, decision.cmd),
+    canTalk: () => canTalkForGroupSessions(
+      larkAppId,
+      chatId,
+      input.senderOpenId,
+      input.teamTrustUnionId,
+      input.senderUnionId,
+      input.chatType,
+      input.botSender,
+    ),
+    canOperate: () => canOperate(larkAppId, chatId, input.senderOpenId, input.teamTrustUnionId),
+    onAdmitted: () => markIngressAdmitted(input.ctx),
+    execute: pluginCommandGateway.execute,
+    reply: (content, msgType) => deps.sessionReply(anchor, content, msgType, larkAppId),
+    text: key => tr(key, { cmd: decision.cmd }, locale),
+  });
+}
+
 // Dependencies passed to card-handler
 // v3 run-level progress is a best-effort IM projection. journal.ndjson remains
 // the only execution truth; the manager persists only Lark delivery state.
@@ -7062,6 +7142,24 @@ function scheduleCompletionProposalStartupRecovery(larkAppId: string): void {
   }
 }
 
+const cardClickTurns = createCardClickTurnBinder({
+  activeSessions,
+  dataDir: () => config.session.dataDir,
+  noteTurnReceived,
+  beginNewTurn,
+  trustedCallerForInboundTurn: (larkAppId, senderOpenId, senderUnionId) =>
+    trustedCallerForInboundTurn(
+      larkAppId,
+      senderOpenId,
+      senderUnionId,
+      // Card clicks have no platform sender_type. The predicate is peer
+      // cross-ref, identity-cache bot/app, and the three union-id bot tables.
+      // A literal false here would vouch for a team bot as a person.
+      cardClickOperatorIsBotOrApp(config.session.dataDir, larkAppId, senderOpenId ?? '', senderUnionId),
+    ),
+});
+setCardClickTurnPoster((larkAppId, body) => cardClickTurns.post(larkAppId, body));
+
 const cardDeps: CardHandlerDeps = {
   activeSessions,
   sessionReply,
@@ -7132,6 +7230,7 @@ const cardDeps: CardHandlerDeps = {
       senderIsBot: opts.senderIsBot,
       substitute: false,
     }),
+  cardClickTurn: (input) => cardClickTurns.accept(input),
 };
 
 // Plugin routing is resolved from the persistent registry and current Bot
@@ -7143,6 +7242,9 @@ const cardActionPluginGateway = createPluginCardActionGateway({
     readGlobalConfig(),
   ),
   fallback: (data, larkAppId) => handleCardAction(data, cardDeps, larkAppId),
+  // Identity comes only from the SDK-verified envelope operator and the
+  // callback context's chat; card values never feed this decision.
+  resolvePrivileges: resolvePluginCardPrivileges,
 });
 
 const LEGACY_WORKFLOW_API_RETIRED = {
@@ -8030,6 +8132,29 @@ ipcRoute('POST', DISPATCH_USER_MENTION_BIND_ROUTE, async (req, res) => {
   }
 });
 
+/** A capability-only (sandboxed / read-isolated) caller may only pin a schedule
+ * to a directory it could already reach: its own session cwd, or its own
+ * role-library subtree — the same boundary `/cd` enforces. The scheduled run
+ * spawns a fresh session whose fs-policy grants readWrite on that workingDir,
+ * so an unconstrained value (another bot's role directory, `~`) would be a
+ * sandbox escape that merely fires later. Returns the path to persist. */
+function capabilityScheduleWorkingDir(ds: DaemonSession, workingDir: string): string | undefined {
+  // Session cwd branch: both sides canonical (the CLI falls back to the kernel's
+  // resolved process.cwd() while the session records the lexical path, so a
+  // symlinked $HOME makes them differ), and the request may be the cwd itself or
+  // any descendant. A symlink inside the cwd that points elsewhere resolves out.
+  const own = ds.workingDir ?? ds.session.workingDir;
+  if (own) {
+    try {
+      const ownReal = realpathSync(own);
+      const real = realpathSync(workingDir);
+      if (real === ownReal || real.startsWith(`${ownReal}/`)) return real;
+    } catch { /* either side missing → fall through to the role-library branch */ }
+  }
+  const v = validateRoleLibraryPath(workingDir, undefined, ds.larkAppId);
+  return v.ok ? v.resolvedPath : undefined;
+}
+
 /** Resolve schedule control from the exact live turn, not the busy/idle hint.
  * The caller must still pass the route's managed-origin proof. Registry-based
  * recovery of the caller follows the shared registryTurnMayAuthenticateHuman
@@ -8076,6 +8201,13 @@ ipcRoute('POST', SCHEDULE_DELEGATED_ADD_ROUTE, async (req, res) => {
   if (!verified.ok || (ds && ds.larkAppId !== selfDaemonLarkAppId)) {
     return jsonRes(res, 403, { ok: false, error: 'schedule_delegation_origin_unproven' });
   }
+  // The Remote Runner relay is a host-side caller (it signs with the daemon
+  // secret). A capability-only caller must not be able to claim that role:
+  // otherwise a bot-authored sandboxed turn could name any admin as the
+  // controller and create a task owned by them.
+  if (remoteRunnerSessionTool && !trustedHost) {
+    return jsonRes(res, 403, { ok: false, error: 'schedule_session_tool_host_required' });
+  }
   if (!scheduleAuthorityStore) {
     return jsonRes(res, 503, { ok: false, error: 'schedule_authority_store_unavailable' });
   }
@@ -8092,9 +8224,24 @@ ipcRoute('POST', SCHEDULE_DELEGATED_ADD_ROUTE, async (req, res) => {
     || (task.calendar !== undefined && task.calendar !== null && typeof task.calendar !== 'string')
     || (task.calendarDayType !== undefined
       && task.calendarDayType !== 'workday' && task.calendarDayType !== 'restday')
+    || (task.untilDone !== undefined && (!task.untilDone || typeof task.untilDone !== 'object'
+      || Array.isArray(task.untilDone)
+      || (task.untilDone.deadline !== undefined && typeof task.untilDone.deadline !== 'string')
+      || (task.untilDone.retryMinutes !== undefined && typeof task.untilDone.retryMinutes !== 'number')))
+    || (task.notify !== undefined && (!Array.isArray(task.notify)
+      || task.notify.some((event: unknown) => typeof event !== 'string')))
     || task.larkAppId !== undefined && task.larkAppId !== (ds?.larkAppId ?? selfDaemonLarkAppId)) {
     return jsonRes(res, 400, { ok: false, error: 'schedule_delegation_scope_invalid' });
   }
+  // Until-done configuration reaches addTask only from a direct human turn or
+  // the host terminal; addTask re-validates it against the parsed schedule.
+  const untilDoneParams = {
+    ...(task.untilDone !== undefined ? { untilDone: {
+      ...(task.untilDone.deadline !== undefined ? { deadline: task.untilDone.deadline as string } : {}),
+      ...(task.untilDone.retryMinutes !== undefined ? { retryMinutes: task.untilDone.retryMinutes as number } : {}),
+    } } : {}),
+    ...(task.notify !== undefined ? { notify: task.notify as Array<'failing' | 'expired'> } : {}),
+  };
   // A host-terminal invocation authenticates with the daemon HMAC rather than
   // a conversation turn. It may create an ownerless local task, preserving the
   // historical admin CLI while still committing through the authority store.
@@ -8103,7 +8250,7 @@ ipcRoute('POST', SCHEDULE_DELEGATED_ADD_ROUTE, async (req, res) => {
       return jsonRes(res, 403, { ok: false, error: 'schedule_host_admin_required' });
     }
     try {
-      const created = scheduler.addTask(task);
+      const created = scheduler.addTask({ ...task, ...untilDoneParams });
       return jsonRes(res, 201, { ok: true, task: created, replay: false });
     } catch (error) {
       return jsonRes(res, 409, { ok: false, error: 'schedule_host_commit_failed',
@@ -8113,11 +8260,29 @@ ipcRoute('POST', SCHEDULE_DELEGATED_ADD_ROUTE, async (req, res) => {
   if (!ds.managedTurnOrigin?.turnId || ds.workerGeneration === undefined) {
     return jsonRes(res, 403, { ok: false, error: 'schedule_delegation_origin_unproven' });
   }
+  if (!trustedHost) {
+    const pinned = capabilityScheduleWorkingDir(ds, task.workingDir);
+    if (!pinned) return jsonRes(res, 403, { ok: false, error: 'schedule_working_dir_forbidden' });
+    task.workingDir = pinned;
+  }
+  // Every turn-created task (direct, relay, in-session host CLI, delegated)
+  // persists a canonical workingDir: the fire-time swap check compares the
+  // stored value with its own realpath, so a lexical value would read as a swap
+  // on a machine whose $HOME is a symlink. The pin above decides whether the
+  // caller may name the directory at all; this decides what form is stored.
+  if (!existsSync(task.workingDir)) {
+    return jsonRes(res, 403, { ok: false, error: remoteRunnerSessionTool
+      ? 'schedule_session_tool_scope_invalid' : 'schedule_working_dir_forbidden' });
+  }
+  task.workingDir = realpathSync(task.workingDir);
   const reply = pickTurnReplyTarget(ds.session, ds.managedTurnOrigin.turnId);
   const expectedRoot = reply?.rootMessageId
     ?? ((ds.scope ?? ds.session.scope) === 'thread' ? ds.session.rootMessageId : undefined);
   if (remoteRunnerSessionTool) {
-    const expectedWorkingDir = ds.workingDir ?? ds.session.workingDir;
+    const rawExpectedWorkingDir = ds.workingDir ?? ds.session.workingDir;
+    let expectedWorkingDir: string | undefined;
+    try { expectedWorkingDir = rawExpectedWorkingDir ? realpathSync(rawExpectedWorkingDir) : undefined; }
+    catch { expectedWorkingDir = undefined; }
     if (!expectedWorkingDir
       || task.chatId !== ds.chatId
       || task.workingDir !== expectedWorkingDir
@@ -8169,7 +8334,10 @@ ipcRoute('POST', SCHEDULE_DELEGATED_ADD_ROUTE, async (req, res) => {
       }
       if (task.chatId !== ds.chatId
         || (task.executionPosition !== 'top-level' && task.executionPosition !== 'topic')
-        || task.deliver === 'local' || task.followActive === true || task.topicTitle !== undefined) {
+        || task.deliver === 'local' || task.followActive === true || task.topicTitle !== undefined
+        // A bot-authored grant covers the schedule shape it was issued for;
+        // until-done / notify are not part of that capability yet.
+        || task.untilDone !== undefined || task.notify !== undefined) {
         return jsonRes(res, 403, { ok: false, error: 'schedule_delegation_scope_invalid' });
       }
       if (task.executionPosition === 'topic' && (!expectedRoot || task.rootMessageId !== expectedRoot)) {
@@ -8217,7 +8385,9 @@ ipcRoute('POST', SCHEDULE_DELEGATED_ADD_ROUTE, async (req, res) => {
     }
     if (!controlOpenId || !controlUnionId
       || !getDashboardAdminOpenIds(ds.larkAppId).includes(controlOpenId)
-      || (ds.chatType === 'group'
+      // A capability-only caller in a p2p turn must not aim the task at another
+      // chat the bot happens to be in unless the operator is a member there.
+      || ((ds.chatType === 'group' || (!trustedHost && task.chatId !== ds.chatId))
         && !(await listChatMemberOpenIds(ds.larkAppId, task.chatId)).includes(controlOpenId))) {
       return jsonRes(res, 403, { ok: false, error: 'schedule_delegation_operator_denied' });
     }
@@ -8250,8 +8420,23 @@ ipcRoute('POST', SCHEDULE_DELEGATED_ADD_ROUTE, async (req, res) => {
       ...(task.calendarDayType !== undefined ? { calendarDayType: task.calendarDayType } : {}),
     };
     if (direct) {
-      const created = scheduler.addTask({ ...baseParams, id: task.id,
-        ownerOpenId: controlOpenId, ownerUnionId: controlUnionId });
+      let created;
+      try {
+        created = scheduler.addTask({ ...baseParams, ...untilDoneParams, id: task.id,
+          ownerOpenId: controlOpenId, ownerUnionId: controlUnionId }, {
+          // turnId is the live managed origin read above — never the request body.
+          directTurn: {
+            turnId,
+            maxTasksPerTurn: readGlobalConfig().scheduleDelegation?.maxTasksPerTurn
+              ?? SCHEDULE_DELEGATION_DEFAULT_MAX_TASKS_PER_TURN,
+          },
+        });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'schedule_direct_task_limit') {
+          return jsonRes(res, 403, { ok: false, error: 'schedule_direct_task_limit' });
+        }
+        throw error;
+      }
       return jsonRes(res, 201, { ok: true, task: created, replay: false });
     }
     const requestHash = computeInputHash(baseParams);
@@ -8339,7 +8524,10 @@ ipcRoute('POST', SCHEDULE_MANAGED_MUTATE_ROUTE, async (req, res) => {
   if (!verified.ok) {
     return jsonRes(res, 403, { ok: false, error: 'schedule_mutation_origin_unproven' });
   }
-  if (!id || !['update', 'remove', 'pause', 'resume', 'run'].includes(action)) {
+  if (!id || !['update', 'remove', 'pause', 'resume', 'run', 'done'].includes(action)) {
+    return jsonRes(res, 400, { ok: false, error: 'invalid_schedule_mutation' });
+  }
+  if (action === 'done' && body.note !== undefined && typeof body.note !== 'string') {
     return jsonRes(res, 400, { ok: false, error: 'invalid_schedule_mutation' });
   }
   if (!scheduleAuthorityStore) {
@@ -8380,8 +8568,10 @@ ipcRoute('POST', SCHEDULE_MANAGED_MUTATE_ROUTE, async (req, res) => {
     }
     providerActorAdmin = true;
   }
+  // A scheduled turn may close its own task: pause/remove, or `done` for an
+  // until-done task reporting that the awaited work is finished.
   const potentialScheduledSelfManager = !!ds && scheduledTaskId === id
-    && (action === 'pause' || action === 'remove');
+    && (action === 'pause' || action === 'remove' || action === 'done');
   if (!hostAdmin && !currentHumanAdmin && !providerActorAdmin && !potentialScheduledSelfManager) {
     return jsonRes(res, 403, { ok: false, error: 'schedule_mutation_current_human_required' });
   }
@@ -8421,8 +8611,38 @@ ipcRoute('POST', SCHEDULE_MANAGED_MUTATE_ROUTE, async (req, res) => {
   if (action === 'update' && authority.task.preconditionRef) {
     return jsonRes(res, 409, { ok: false, error: 'schedule_precondition_dashboard_update_required' });
   }
+  // A capability-only caller borrows the current human administrator's
+  // authority, but the request bytes come from the (untrusted) agent. Keep it
+  // to the tasks this conversation could have created: same chat, and a
+  // workingDir within its reach. Otherwise it could run / pause / remove any
+  // task of this bot, or rewrite the prompt of one pinned to a wider directory
+  // and get that directory's readWrite at the next run — the escape
+  // capabilityScheduleWorkingDir closes on create. Self-management of the
+  // currently running scheduled task keeps its own authorization above.
+  if (!trustedHost && !scheduledSelfManager) {
+    if (!ds || authority.task.chatId !== ds.chatId) {
+      return jsonRes(res, 403, { ok: false, error: 'schedule_mutation_scope_forbidden' });
+    }
+    if (!capabilityScheduleWorkingDir(ds, authority.task.workingDir)) {
+      return jsonRes(res, 403, { ok: false, error: 'schedule_working_dir_forbidden' });
+    }
+  }
   let ok = false;
   let error: string | undefined;
+  if (action === 'resume' && isUntilDoneClosed(authority.task)) {
+    return jsonRes(res, 409, { ok: false, error: 'schedule_until_done_closed' });
+  }
+  if (action === 'done') {
+    const note = typeof body.note === 'string'
+      ? Array.from(body.note.trim()).slice(0, UNTIL_DONE_NOTE_MAX_CHARS).join('')
+      : undefined;
+    const result = scheduler.completeTask(id, note);
+    return jsonRes(res, result.ok ? 200 : 409, {
+      ok: result.ok,
+      ...(result.replay ? { replay: true } : {}),
+      ...(result.error ? { error: result.error } : {}),
+    });
+  }
   if (action === 'update') {
     const hasPrompt = typeof body.prompt === 'string' && body.prompt.trim();
     const hasCalendar = body.calendar !== undefined || body.calendarDayType !== undefined;
@@ -25332,7 +25552,25 @@ async function executeNewTopicSlash(slash: NewTopicSlashContext): Promise<boolea
     coldStartPassthrough: coldStartPassthroughCommands(larkAppId),
     senderIsBot: senderIsBotForSlashGate,
     acceptSlashFromBots: botAcceptsSlashFromBots(larkAppId),
+    pluginCommands: pluginCommandsForRouting(larkAppId, cmdContent),
   });
+  if (slashDecision.kind === 'plugin') {
+    await executePluginSlashCommand({
+      ctx,
+      decision: slashDecision,
+      larkAppId,
+      chatId,
+      chatType,
+      anchor,
+      messageId: parsed.messageId,
+      senderOpenId,
+      senderUnionId,
+      teamTrustUnionId,
+      botSender: senderIsBotForSlashGate,
+      deps: commandDepsForInvocation({ scope, chatId, anchor, messageId: parsed.messageId, replyRootId }),
+    });
+    return true;
+  }
   // grant 限制闸对**认不出**的 `/xxx` 同样要查（改造前 parseSlashCommandInvocation 成功即查，
   // 与命令是否注册无关）：受限成员的 CLI 自定义斜杠命令不能绕过这道闸进 CLI。
   if (slashDecision.kind === 'forward' && slashDecision.reason === 'unknown_slash') {
@@ -25835,6 +26073,23 @@ async function handleBotAdded(
     let groupJoinSender: ResolvedSender | undefined;
     let groupJoinTrustedCaller: TrustedCaller | undefined;
     let groupJoinGateMatched = false;
+    // bot.added carries an operator id, not a platform sender_type. Read bot/app
+    // evidence before any owner or turn-sender write: a known peer, or an
+    // identity-cache entry already typed app/bot, must not be recorded as the
+    // human who opened the session. A cache miss is not evidence either way, so
+    // an unknown operator keeps the existing human registration. This read does
+    // not call resolveSender — an undefined senderType would write "user" into
+    // the cache and manufacture the evidence we are refusing to invent.
+    const cachedOperator = operatorOpenId ? getIdentity(larkAppId, operatorOpenId) : undefined;
+    const operatorIsBot: true | undefined = operatorOpenId
+      && (isKnownPeerBot(config.session.dataDir, larkAppId, operatorOpenId)
+        || cachedOperator?.type === 'bot' || cachedOperator?.type === 'app')
+      ? true : undefined;
+    // App/bot operators get no human owner. trustedSessionController stamps
+    // every owner as senderType=user; leaving the field unset is what keeps
+    // that stamp off. lastCallerOpenId is the quote-chain caller for provenance
+    // and must not name the app either.
+    const humanOperatorOpenId = operatorIsBot ? undefined : operatorOpenId;
     if (!forced) {
       const groupJoinGate = await evaluatePromptGate('chat.bot_added', {
         larkAppId,
@@ -25868,14 +26123,9 @@ async function handleBotAdded(
       // contract). When gateRequired is true this branch is reached only after
       // a matching sync hook allowed, so gateMatched is necessarily true here.
       if (botCfg.autoStartOnGroupJoinGateRequired === true) {
-        // bot.added supplies an operator ID, not a platform sender_type. Read
-        // independent bot evidence before resolving any display name: even an
-        // undefined senderType makes resolveSender write "user" into the cache.
-        const cachedOperator = operatorOpenId ? getIdentity(larkAppId, operatorOpenId) : undefined;
-        const operatorIsBot: true | undefined = operatorOpenId
-          && (isKnownPeerBot(config.session.dataDir, larkAppId, operatorOpenId)
-            || cachedOperator?.type === 'bot' || cachedOperator?.type === 'app')
-          ? true : undefined;
+        // Display-name lookup stays inside the opt-in gate. resolveSender is
+        // only called once operatorIsBot is already true, and with senderType
+        // 'app', so it cannot write a human into the identity cache.
         if (operatorOpenId) {
           let name = cachedOperator?.name;
           if (operatorIsBot) {
@@ -25892,9 +26142,8 @@ async function handleBotAdded(
         }
         // Without bot evidence, caller deliberately has no senderType; it cannot
         // match a later platform-authenticated user via sameTrustedPrincipal.
-        // Owner continuity instead relies on trustedSessionController's separate
-        // user-typed owner, even for app operators. Turn privileges read caller,
-        // not controller; tightening the latter also requires migrating owner checks.
+        // A known app/bot is not the session owner, so there is no user-typed
+        // controller to confuse with this caller. Turn privileges read caller.
         groupJoinTrustedCaller = groupJoinSender?.openId === operatorOpenId
           ? trustedCallerForTurn(larkAppId, operatorOpenId, undefined, operatorIsBot)
           : undefined;
@@ -25952,8 +26201,8 @@ async function handleBotAdded(
     const session = sessionStore.createSession(chatId, anchor, title, chatType);
     const now = Date.now();
     session.larkAppId = larkAppId;
-    session.ownerOpenId = operatorOpenId;
-    session.lastCallerOpenId = operatorOpenId;
+    session.ownerOpenId = humanOperatorOpenId;
+    session.lastCallerOpenId = humanOperatorOpenId;
     session.lastMessageAt = new Date(now).toISOString();
     session.scope = scope;
     if (pinnedWorkingDir) session.workingDir = pinnedWorkingDir;
@@ -25991,7 +26240,7 @@ async function handleBotAdded(
       } : {}),
       pendingSender: groupJoinSender,
       pendingTrustedCaller: groupJoinTrustedCaller,
-      ownerOpenId: operatorOpenId,
+      ownerOpenId: humanOperatorOpenId,
       currentTurnTitle: title,
       workingDir: pinnedWorkingDir,
       // 非 shared 路径的首轮 turn 身份（joinTurnId）；shared 路径由
@@ -26081,18 +26330,17 @@ async function handleBotAdded(
       sharedReplyRootId = undefined;
       void deleteMessage(larkAppId, messageId);
     };
-    // 首轮无真人入站消息，但 bot.added 事件本身携带操作人：把拉 bot 入群的
-    // 人登记为本轮 sender，schedule 等需要当前轮真人身份的命令（创建/管理
-    // 定时任务）据此归属到操作人，与 session.ownerOpenId 一致。
-    // isBot:false 是对 bot.added 操作人的直接断言（事件语义上操作人即拉群的
-    // 真人），不是身份解析结果；下游 schedule 管理路由还有 dashboard 管理员
-    // 名单硬门兜底。
-    // participantsIncomplete 让 --mention-back 保持既有安全方向（窗口不完整 →
-    // 要求显式 @），这条登记不改变回复时的 @ 行为。
-    const joinTurnSenderOpts = operatorOpenId
+    // 首轮无真人入站消息。没有应用/机器人证据时，仍把拉 bot 入群的操作人登记
+    // 为本轮 sender，schedule 等需要当前轮真人身份的命令据此归属，与
+    // session.ownerOpenId 一致。isBot:false 只覆盖「没有 bot/app 证据」的
+    // 操作人；已知 peer、或身份缓存已是 app/bot 的操作人走 humanOperatorOpenId
+    // 的空登记，避免 registryEntryProvesHumanSender 在回合结束后把机器人恢复
+    // 成真人发起人。participantsIncomplete 让 --mention-back 保持既有安全方向
+    // （窗口不完整 → 要求显式 @），这条登记不改变回复时的 @ 行为。
+    const joinTurnSenderOpts = humanOperatorOpenId
       ? {
-          senderOpenId: operatorOpenId,
-          participants: [{ openId: operatorOpenId, isBot: false }],
+          senderOpenId: humanOperatorOpenId,
+          participants: [{ openId: humanOperatorOpenId, isBot: false }],
           participantsIncomplete: true,
         }
       : {};
@@ -26176,7 +26424,7 @@ async function handleBotAdded(
       }
       ds.initialStartPending = false; // pendingRepo/worktree now owns buffering
       armSharedReplyTarget();
-      startAutoWorktreePending(ds, { anchor, baseDir: pinnedWorkingDir, title, prompt: promptBody, operatorOpenId });
+      startAutoWorktreePending(ds, { anchor, baseDir: pinnedWorkingDir, title, prompt: promptBody, operatorOpenId: humanOperatorOpenId });
       return;
     }
 
@@ -28015,10 +28263,9 @@ async function handleThreadReplyAdmitted(
   // byte-for-byte the pre-#1348 shape. The worker reads the same switch, so a
   // message that is not diverted here is also not rejected there.
   // A join caller without senderType differs from a later authenticated user.
-  // The independent user-typed owner controller preserves that owner's continuity;
-  // if trustedSessionController is tightened, migrate this owner check with it.
-  // App operators retain the existing user-typed owner limitation: later bot
-  // messages do not match it, while downstream owner handling still takes user branches.
+  // The owner controller is user-typed only when join recorded a human operator.
+  // A known app/bot operator is not an owner, so it has no user-typed controller
+  // for a later bot message to miss, and owner handling does not take the user branch.
   const activePrincipalTurn = ds.activeInteractiveTurn;
   if (config.crossPrincipalInterruption
     && activePrincipalTurn
@@ -28893,6 +29140,7 @@ async function executeThreadSlash(slash: ThreadSlashContext): Promise<boolean> {
       cascadeCapable: !!existingDs && !isRemoteBackendSession(existingDs)
         && !existingDs.adoptedFrom && !existingDs.initConfig?.adoptMode,
       hasAttachments: resources.length > 0,
+      pluginCommands: pluginCommandsForRouting(larkAppId, cmdContent),
     });
   // 级联在飞：第二条级联 fail closed；普通正文与单条透传排在定序器之后重入（保序）；
   // botmux 自己的命令（/close /status …）照常放行。正文项的重入自带 cascadeBodyReentry 标记。
@@ -28964,6 +29212,23 @@ async function executeThreadSlash(slash: ThreadSlashContext): Promise<boolean> {
       substitute: !!substituteTrigger,
     }).catch(err => {
       logger.error(`[${anchor.substring(0, 12)}] cascade failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    return true;
+  }
+  if (slashDecision && slashDecision.kind === 'plugin') {
+    await executePluginSlashCommand({
+      ctx,
+      decision: slashDecision,
+      larkAppId,
+      chatId: existingDs?.chatId ?? chatId ?? routingChatId,
+      chatType,
+      anchor,
+      messageId: parsed.messageId,
+      senderOpenId,
+      senderUnionId,
+      teamTrustUnionId,
+      botSender: isBotSenderType || isForeignBotSender,
+      deps: commandDepsForInvocation({ scope, chatId: routingChatId, anchor, messageId: parsed.messageId, replyRootId }),
     });
     return true;
   }
@@ -31030,6 +31295,29 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         return;
       }
       try {
+        const restored = ds.session.deploymentContinuation;
+        const authority = deploymentContinuationAuthority(ds);
+        const restoresOriginalCaller = restored?.state === 'claimed' && restored.turnId === receipt.turnId
+          && authority?.turnId === restored.turnId
+          && authority.caller?.senderType === 'user'
+          && authority.caller.requestLarkAppId === restored.caller.requestLarkAppId
+          && authority.caller.requestUserOpenId === restored.caller.requestUserOpenId
+          && (authority.caller.source === undefined || authority.caller.source === 'failed_turn_recovery');
+        const caller = restored?.state === 'claimed' && restored.turnId === receipt.turnId
+          ? restoresOriginalCaller ? restored.caller : undefined
+          : authority?.caller ?? undefined;
+        const recorded = recordDeploymentContinuation(ds.session, receipt, {
+          caller, currentTurnId: authority?.turnId,
+          workerGeneration: context.workerGeneration, rpc: ds.initConfig?.codexRpcInput === true,
+        }, previous => sessionStore.updateDeploymentContinuation(ds.session, previous));
+        if (recorded && caller && restored?.state === 'claimed'
+          && ds.activeInteractiveTurn?.turnId !== receipt.turnId) {
+          setActiveInteractiveTurn(ds, receipt.turnId, { ...caller, source: 'failed_turn_recovery' });
+        }
+      } catch (error) {
+        logger.error(`[restart] Native task checkpoint could not be persisted: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
         const cliId = ds.session.cliLaunchSnapshot?.cliId ?? ds.session.cliId ?? getBot(ds.larkAppId).config.cliId;
         confirmNativeGroupContextInput({ appId: ds.larkAppId, chatId: ds.chatId, turnId: receipt.turnId,
           sessionId: ds.session.sessionId, nativeSessionId: receipt.nativeSessionId ?? knownNative, cliId,
@@ -31038,6 +31326,11 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       } catch { logger.warn('[group-context] native input receipt unavailable; background may repeat'); }
     },
     async onTurnTerminal(ds, terminal, context) {
+      if (ds.session.deploymentContinuation?.state !== 'cancelled'
+        && ds.session.deploymentContinuation?.workerGeneration === context.workerGeneration) {
+        try { cancelDeploymentContinuation(ds.session, previous => sessionStore.updateDeploymentContinuation(ds.session, previous), terminal.turnId); }
+        catch (error) { logger.error(`[restart] Could not retire task checkpoint: ${error instanceof Error ? error.message : String(error)}`); }
+      }
       const originalFailedCaller = failedTurnCaller(ds, terminal.turnId);
       const originalFailedSilent = isSilentScheduledTurn(ds, terminal.turnId);
       // Queue ACKs do not prove consumption. Only a matching completed native
@@ -32343,6 +32636,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
 
   // Normalize legacy document-native watches before restore can close their old sessions.
   if (!cfg.apiOnly) normalizeDocNativeSubscriptionsBeforeSessionRestore(cfg.larkAppId);
+  warnPluginCommandsShadowedByPassthrough(cfg.larkAppId);
 
   // Restore active sessions from previous run
   const startupXpiQuarantineNotices = await restoreSessionsAndScheduleStartupRecovery({
@@ -32807,6 +33101,21 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     logger.warn(`[v3] progress-card cold-attach failed; continuing daemon startup: ${err instanceof Error ? err.message : String(err)}`);
   });
 
+  // Opt-in owner notifications (`schedule add --notify`); target and wording
+  // are decided in schedule-until-done.ts. An unavailable transport must throw
+  // (not return): the scheduler persists the once-per-streak marker only after
+  // a delivery succeeds, so a silent return would mute the rest of the streak.
+  scheduler.setScheduleNotifier(async (task, event) => {
+    const target = scheduleNotificationTarget(task, cfg.larkAppId);
+    if (!larkTransportEnabled({ chatId: target.chatId, apiOnly: getBot(target.appId).config.apiOnly })) {
+      throw new Error('lark_transport_unavailable');
+    }
+    const text = scheduleNotificationText(task, event);
+    const content = target.mentionOpenId ? buildSessionOwnerMention(target.mentionOpenId, text) : text;
+    if (target.rootMessageId) await replyMessage(target.appId, target.rootMessageId, content, 'text', true);
+    else await sendMessage(target.appId, target.chatId, content, 'text');
+  });
+
   // Start scheduler in every daemon.  Each daemon owns exactly one bot, so
   // each filters to only execute tasks whose `larkAppId` matches its bot
   // (unmatched tasks are handled by the owning bot's daemon instead; a
@@ -32871,6 +33180,14 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         effectiveAppId,
         async (additionalPrompt) => {
           const targetChatIds = scheduleStore.effectiveScheduleChatIds(task);
+          // Until-done runs carry their own run context (attempt, deadline, how
+          // to mark done) so the task prompt only states what to wait for.
+          const untilDonePrompt = buildUntilDoneRunPrompt(
+            task,
+            executionContext.runId,
+            iso => new Date(iso).toLocaleString('zh-CN', { timeZone: scheduleTimeZone() }),
+          );
+          const runPrompt = [additionalPrompt, untilDonePrompt].filter(Boolean).join('\n\n') || undefined;
           try {
             const results = await executeScheduledTaskForTargets(
               task,
@@ -32881,7 +33198,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
                   targetTask,
                   activeSessions,
                   refreshCliVersion,
-                  additionalPrompt,
+                  runPrompt,
                   {
                     prepareTurnIdentity: (session, turnId) =>
                       prepareTurnCliIdentity(session, turnId),

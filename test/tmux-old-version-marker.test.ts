@@ -50,6 +50,15 @@ it.skipIf(process.platform !== 'linux' || spawnSync('tmux', ['-V'], { timeout: 3
     writeFileSync(shim, `#!/bin/sh
 # Emulates pre-3.2 tmux and an unavailable version probe.
 if [ "$1" = "-V" ]; then echo "tmux ${version}"; exit 0; fi
+# Server-side version answer: report the SAME emulated version, otherwise the
+# (real, modern) server spawned through this shim would answer its actual
+# version and the backend would correctly conclude failed is supported.
+for a in "$@"; do
+  if [ "$a" = "#{version}" ]; then
+    case "${version}" in unknown) echo "not-a-version";; *) echo "${version}";; esac
+    exit 0
+  fi
+done
 previous=''
 seen=0
 for a in "$@"; do
